@@ -1,38 +1,14 @@
-const initSqlJs = require("sql.js");
-const path = require("path");
-const fs = require("fs");
+const { Pool } = require("pg");
 
-const DB_PATH = path.join(__dirname, "chess.db");
-
-let db = null;
-
-async function getDb() {
-  if (db) return db;
-  const SQL = await initSqlJs();
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuffer);
-  } else {
-    db = new SQL.Database();
-  }
-  await initTables();
-  return db;
-}
-
-function saveDb() {
-  if (!db) return;
-  try {
-    const data = db.export();
-    fs.writeFileSync(DB_PATH, Buffer.from(data));
-  } catch (e) {
-    console.error("Save DB error:", e);
-  }
-}
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+});
 
 async function initTables() {
-  db.run(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS players (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT,
       display_name TEXT,
@@ -41,12 +17,12 @@ async function initTables() {
       wins INTEGER DEFAULT 0,
       losses INTEGER DEFAULT 0,
       draws INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  db.run(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS game_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       white_username TEXT NOT NULL,
       black_username TEXT NOT NULL,
       white_rating_before INTEGER,
@@ -56,52 +32,10 @@ async function initTables() {
       result TEXT NOT NULL,
       moves INTEGER DEFAULT 0,
       time_limit INTEGER,
-      played_at TEXT DEFAULT (datetime('now'))
+      played_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  saveDb();
   console.log("✅ Database tables initialized");
-}
-
-function queryOne(sql, params = []) {
-  try {
-    const stmt = db.prepare(sql);
-    stmt.bind(params);
-    if (stmt.step()) {
-      const row = stmt.getAsObject();
-      stmt.free();
-      return row;
-    }
-    stmt.free();
-    return null;
-  } catch (e) {
-    console.error("queryOne error:", e.message, sql);
-    throw e;
-  }
-}
-
-function queryAll(sql, params = []) {
-  try {
-    const stmt = db.prepare(sql);
-    stmt.bind(params);
-    const rows = [];
-    while (stmt.step()) rows.push(stmt.getAsObject());
-    stmt.free();
-    return rows;
-  } catch (e) {
-    console.error("queryAll error:", e.message, sql);
-    throw e;
-  }
-}
-
-function run(sql, params = []) {
-  try {
-    db.run(sql, params);
-    saveDb();
-  } catch (e) {
-    console.error("run error:", e.message, sql);
-    throw e;
-  }
 }
 
 function calculateElo(ratingA, ratingB, resultA) {
@@ -112,30 +46,39 @@ function calculateElo(ratingA, ratingB, resultA) {
   return { newRatingA, newRatingB };
 }
 
-function getPlayerByUsername(username) {
-  return queryOne("SELECT * FROM players WHERE username = ?", [username]);
+async function getPlayerByUsername(username) {
+  const res = await pool.query("SELECT * FROM players WHERE username = $1", [username]);
+  return res.rows[0] || null;
 }
 
-function createPlayer(username, passwordHash, displayName) {
-  run("INSERT INTO players (username, password_hash, display_name) VALUES (?, ?, ?)",
-    [username, passwordHash, displayName || username]);
+async function createPlayer(username, passwordHash, displayName) {
+  await pool.query(
+    "INSERT INTO players (username, password_hash, display_name) VALUES ($1, $2, $3)",
+    [username, passwordHash, displayName || username]
+  );
   return getPlayerByUsername(username);
 }
 
-function updateRatings(whiteUsername, blackUsername, result, moves, timeLimit) {
-  const white = getPlayerByUsername(whiteUsername);
-  const black = getPlayerByUsername(blackUsername);
+async function updateRatings(whiteUsername, blackUsername, result, moves, timeLimit) {
+  const white = await getPlayerByUsername(whiteUsername);
+  const black = await getPlayerByUsername(blackUsername);
   if (!white || !black) return null;
 
   const resultA = result === "white" ? 1 : result === "black" ? 0 : 0.5;
   const { newRatingA, newRatingB } = calculateElo(white.rating, black.rating, resultA);
 
-  run(`UPDATE players SET rating=?, games=games+1, wins=wins+?, losses=losses+?, draws=draws+? WHERE username=?`,
-    [newRatingA, result==="white"?1:0, result==="black"?1:0, result==="draw"?1:0, whiteUsername]);
-  run(`UPDATE players SET rating=?, games=games+1, wins=wins+?, losses=losses+?, draws=draws+? WHERE username=?`,
-    [newRatingB, result==="black"?1:0, result==="white"?1:0, result==="draw"?1:0, blackUsername]);
-  run(`INSERT INTO game_history (white_username,black_username,white_rating_before,black_rating_before,white_rating_after,black_rating_after,result,moves,time_limit) VALUES (?,?,?,?,?,?,?,?,?)`,
-    [whiteUsername, blackUsername, white.rating, black.rating, newRatingA, newRatingB, result, moves, timeLimit]);
+  await pool.query(
+    `UPDATE players SET rating=$1, games=games+1, wins=wins+$2, losses=losses+$3, draws=draws+$4 WHERE username=$5`,
+    [newRatingA, result==="white"?1:0, result==="black"?1:0, result==="draw"?1:0, whiteUsername]
+  );
+  await pool.query(
+    `UPDATE players SET rating=$1, games=games+1, wins=wins+$2, losses=losses+$3, draws=draws+$4 WHERE username=$5`,
+    [newRatingB, result==="black"?1:0, result==="white"?1:0, result==="draw"?1:0, blackUsername]
+  );
+  await pool.query(
+    `INSERT INTO game_history (white_username,black_username,white_rating_before,black_rating_before,white_rating_after,black_rating_after,result,moves,time_limit) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [whiteUsername, blackUsername, white.rating, black.rating, newRatingA, newRatingB, result, moves, timeLimit]
+  );
 
   return {
     white: { username: white.username, displayName: white.display_name, rating: white.rating, newRating: newRatingA, change: newRatingA - white.rating },
@@ -143,21 +86,23 @@ function updateRatings(whiteUsername, blackUsername, result, moves, timeLimit) {
   };
 }
 
-function getLeaderboard(limit = 20) {
-  return queryAll(`
+async function getLeaderboard(limit = 20) {
+  const res = await pool.query(`
     SELECT username, display_name, rating, games, wins, losses, draws,
-      CASE WHEN games > 0 THEN ROUND(CAST(wins AS FLOAT) * 100.0 / games, 1) ELSE 0 END as win_rate
+      CASE WHEN games > 0 THEN ROUND(wins * 100.0 / games, 1) ELSE 0 END as win_rate
     FROM players WHERE games > 0
-    ORDER BY rating DESC LIMIT ?
+    ORDER BY rating DESC LIMIT $1
   `, [limit]);
+  return res.rows;
 }
 
-function getPlayerGames(username, limit = 10) {
-  return queryAll(`
+async function getPlayerGames(username, limit = 10) {
+  const res = await pool.query(`
     SELECT * FROM game_history
-    WHERE white_username=? OR black_username=?
-    ORDER BY played_at DESC LIMIT ?
-  `, [username, username, limit]);
+    WHERE white_username=$1 OR black_username=$1
+    ORDER BY played_at DESC LIMIT $2
+  `, [username, limit]);
+  return res.rows;
 }
 
-module.exports = { getDb, getPlayerByUsername, createPlayer, updateRatings, getLeaderboard, getPlayerGames };
+module.exports = { initTables, getPlayerByUsername, createPlayer, updateRatings, getLeaderboard, getPlayerGames };
