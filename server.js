@@ -4,7 +4,7 @@ const { Server } = require("socket.io");
 const { Chess } = require("chess.js");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { getPlayerByUsername, createPlayer, updateRatings, getLeaderboard, getPlayerGames } = require("./database");
+const { getDb, getPlayerByUsername, createPlayer, updateRatings, getLeaderboard } = require("./database");
 
 const JWT_SECRET = process.env.JWT_SECRET || "chess_secret_key_2024";
 const app = express();
@@ -23,63 +23,46 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Auth middleware ──
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "No token" });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid token" });
-  }
+  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
+  catch { res.status(401).json({ error: "Invalid token" }); }
 }
 
-// ── Register ──
 app.post("/auth/register", async (req, res) => {
   const { username, password, displayName } = req.body;
   if (!username || !password) return res.status(400).json({ error: "Username and password required" });
   if (username.length < 3) return res.status(400).json({ error: "Username must be at least 3 characters" });
   if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
-
   const existing = getPlayerByUsername(username);
   if (existing) return res.status(400).json({ error: "Username already taken" });
-
   const passwordHash = await bcrypt.hash(password, 10);
   const player = createPlayer(username, passwordHash, displayName || username);
   const token = jwt.sign({ id: player.id, username: player.username }, JWT_SECRET, { expiresIn: "30d" });
-
   res.json({ token, user: { id: player.id, username: player.username, displayName: player.display_name, rating: player.rating } });
 });
 
-// ── Login ──
 app.post("/auth/login", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: "Username and password required" });
-
   const player = getPlayerByUsername(username);
   if (!player) return res.status(400).json({ error: "User not found" });
   if (!player.password_hash) return res.status(400).json({ error: "This account uses Google login" });
-
   const valid = await bcrypt.compare(password, player.password_hash);
   if (!valid) return res.status(400).json({ error: "Wrong password" });
-
   const token = jwt.sign({ id: player.id, username: player.username }, JWT_SECRET, { expiresIn: "30d" });
   res.json({ token, user: { id: player.id, username: player.username, displayName: player.display_name, rating: player.rating } });
 });
 
-// ── Profile ──
 app.get("/auth/me", authMiddleware, (req, res) => {
   const player = getPlayerByUsername(req.user.username);
   if (!player) return res.status(404).json({ error: "User not found" });
-  const games = getPlayerGames(player.username, 10);
-  res.json({ user: { id: player.id, username: player.username, displayName: player.display_name, rating: player.rating, games: player.games, wins: player.wins, losses: player.losses, draws: player.draws }, recentGames: games });
+  res.json({ user: { id: player.id, username: player.username, displayName: player.display_name, rating: player.rating, games: player.games, wins: player.wins, losses: player.losses, draws: player.draws } });
 });
 
-// ── Leaderboard ──
 app.get("/leaderboard", (_, res) => res.json(getLeaderboard(20)));
 
-// ── Socket.io ──
 const rooms = {};
 
 function createRoom(roomId, timeLimit) {
@@ -109,9 +92,7 @@ function startTimer(roomId) {
     room.timers[cur] -= Date.now() - room.lastMoveTime;
     room.lastMoveTime = Date.now();
     if (room.timers[cur] <= 0) {
-      room.timers[cur] = 0;
-      room.status = "finished";
-      clearInterval(room.timerInterval);
+      room.timers[cur] = 0; room.status = "finished"; clearInterval(room.timerInterval);
       const winner = cur === "white" ? "black" : "white";
       const rc = finishGame(room, winner);
       io.to(roomId).emit("gameOver", { type: "timeout", winner, message: `Time's up! ${winner === "white" ? "White" : "Black"} wins!`, ratingChanges: rc });
@@ -131,13 +112,11 @@ function finishGame(room, result) {
   const white = list.find((p) => p.color === "white");
   const black = list.find((p) => p.color === "black");
   if (!white || !black) return null;
-  try {
-    return updateRatings(white.username, black.username, result, room.moveHistory.length, room.timeLimit / 60000);
-  } catch (e) { console.error("Rating error:", e); return null; }
+  try { return updateRatings(white.username, black.username, result, room.moveHistory.length, room.timeLimit / 60000); }
+  catch (e) { console.error("Rating error:", e); return null; }
 }
 
 io.on("connection", (socket) => {
-  // Token шалгах
   socket.on("authenticate", ({ token }) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
@@ -153,15 +132,12 @@ io.on("connection", (socket) => {
 
   socket.on("joinRoom", ({ roomId, timeLimit }) => {
     if (!socket.username) return socket.emit("error", { message: "Please login first" });
-
     let room = rooms[roomId] || createRoom(roomId, timeLimit || 10);
     const playerCount = Object.keys(room.players).length;
-
     const player = getPlayerByUsername(socket.username);
 
     if (playerCount >= 2) {
-      room.spectators.push(socket.id);
-      socket.join(roomId);
+      room.spectators.push(socket.id); socket.join(roomId);
       socket.emit("joinedAsSpectator", { roomId, fen: room.chess.fen(), message: "You joined as a spectator", timers: room.timers, timeLimit: room.timeLimit, moveHistory: room.moveHistory });
       return;
     }
@@ -169,15 +145,7 @@ io.on("connection", (socket) => {
     const color = assignColor(room);
     room.players[socket.id] = { color, username: player.username, name: player.display_name, rating: player.rating };
     socket.join(roomId);
-
-    socket.emit("joinedRoom", {
-      roomId, color,
-      playerName: player.display_name,
-      playerRating: player.rating,
-      fen: room.chess.fen(),
-      message: color === "white" ? "You are White — your turn first!" : "You are Black — wait for White",
-      timers: room.timers, timeLimit: room.timeLimit, moveHistory: room.moveHistory,
-    });
+    socket.emit("joinedRoom", { roomId, color, playerName: player.display_name, playerRating: player.rating, fen: room.chess.fen(), message: color === "white" ? "You are White — your turn first!" : "You are Black — wait for White", timers: room.timers, timeLimit: room.timeLimit, moveHistory: room.moveHistory });
 
     if (Object.keys(room.players).length === 2) {
       room.status = "playing";
@@ -194,15 +162,13 @@ io.on("connection", (socket) => {
     if (!player) return socket.emit("error", { message: "You are not a player" });
     const cur = room.chess.turn() === "w" ? "white" : "black";
     if (player.color !== cur) return socket.emit("error", { message: "Not your turn" });
-
     if (room.lastMoveTime) room.timers[cur] = Math.max(0, room.timers[cur] - (Date.now() - room.lastMoveTime));
 
     let result;
     try { result = room.chess.move(move); } catch { return socket.emit("invalidMove", { move, message: "Invalid move" }); }
     if (!result) return socket.emit("invalidMove", { move, message: "Move not allowed" });
 
-    room.lastMoveTime = Date.now();
-    room.drawOffer = null;
+    room.lastMoveTime = Date.now(); room.drawOffer = null;
     room.moveHistory.push({ san: result.san, from: result.from, to: result.to, color: result.color, fen: room.chess.fen(), moveNumber: Math.ceil(room.moveHistory.length / 2) + 1 });
 
     const fen = room.chess.fen();
@@ -217,33 +183,27 @@ io.on("connection", (socket) => {
   });
 
   socket.on("offerDraw", ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room || !room.players[socket.id]) return;
-    const player = room.players[socket.id];
-    room.drawOffer = player.color;
+    const room = rooms[roomId]; if (!room || !room.players[socket.id]) return;
+    const player = room.players[socket.id]; room.drawOffer = player.color;
     io.to(roomId).emit("drawOffered", { by: player.color, message: `${player.name} offers a draw` });
   });
 
   socket.on("acceptDraw", ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room || !room.drawOffer) return;
+    const room = rooms[roomId]; if (!room || !room.drawOffer) return;
     room.status = "finished"; stopTimer(room);
     const rc = finishGame(room, "draw");
     io.to(roomId).emit("gameOver", { type: "draw", winner: null, message: "Draw agreed! 🤝", ratingChanges: rc });
   });
 
   socket.on("declineDraw", ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room) return;
+    const room = rooms[roomId]; if (!room) return;
     room.drawOffer = null;
     io.to(roomId).emit("drawDeclined", { message: "Draw offer declined" });
   });
 
   socket.on("restartGame", ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room || !room.players[socket.id]) return;
-    stopTimer(room);
-    room.chess.reset(); room.status = "playing";
+    const room = rooms[roomId]; if (!room || !room.players[socket.id]) return;
+    stopTimer(room); room.chess.reset(); room.status = "playing";
     room.timers = { white: room.timeLimit, black: room.timeLimit };
     room.moveHistory = []; room.drawOffer = null;
     Object.keys(room.players).forEach((id) => { room.players[id].color = room.players[id].color === "white" ? "black" : "white"; });
@@ -253,8 +213,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("resign", ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room || !room.players[socket.id]) return;
+    const room = rooms[roomId]; if (!room || !room.players[socket.id]) return;
     const player = room.players[socket.id];
     const winner = player.color === "white" ? "black" : "white";
     room.status = "finished"; stopTimer(room);
@@ -278,4 +237,11 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`\n🚀 Chess server: http://localhost:${PORT}\n`));
+
+// Database эхлүүлсний дараа сервер ажиллуулах
+getDb().then(() => {
+  server.listen(PORT, () => console.log(`\n🚀 Chess server: http://localhost:${PORT}\n`));
+}).catch((err) => {
+  console.error("Database init failed:", err);
+  process.exit(1);
+});
