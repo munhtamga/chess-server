@@ -15,17 +15,21 @@ async function getDb() {
   } else {
     db = new SQL.Database();
   }
-  initTables();
+  await initTables();
   return db;
 }
 
 function saveDb() {
   if (!db) return;
-  const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
+  try {
+    const data = db.export();
+    fs.writeFileSync(DB_PATH, Buffer.from(data));
+  } catch (e) {
+    console.error("Save DB error:", e);
+  }
 }
 
-function initTables() {
+async function initTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS players (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +42,7 @@ function initTables() {
       losses INTEGER DEFAULT 0,
       draws INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
-    );
+    )
   `);
   db.run(`
     CREATE TABLE IF NOT EXISTS game_history (
@@ -53,35 +57,51 @@ function initTables() {
       moves INTEGER DEFAULT 0,
       time_limit INTEGER,
       played_at TEXT DEFAULT (datetime('now'))
-    );
+    )
   `);
   saveDb();
+  console.log("✅ Database tables initialized");
 }
 
 function queryOne(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  if (stmt.step()) {
-    const row = stmt.getAsObject();
+  try {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return row;
+    }
     stmt.free();
-    return row;
+    return null;
+  } catch (e) {
+    console.error("queryOne error:", e.message, sql);
+    throw e;
   }
-  stmt.free();
-  return null;
 }
 
 function queryAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
+  try {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
+    return rows;
+  } catch (e) {
+    console.error("queryAll error:", e.message, sql);
+    throw e;
+  }
 }
 
 function run(sql, params = []) {
-  db.run(sql, params);
-  saveDb();
+  try {
+    db.run(sql, params);
+    saveDb();
+  } catch (e) {
+    console.error("run error:", e.message, sql);
+    throw e;
+  }
 }
 
 function calculateElo(ratingA, ratingB, resultA) {
@@ -97,7 +117,8 @@ function getPlayerByUsername(username) {
 }
 
 function createPlayer(username, passwordHash, displayName) {
-  run("INSERT INTO players (username, password_hash, display_name) VALUES (?, ?, ?)", [username, passwordHash, displayName || username]);
+  run("INSERT INTO players (username, password_hash, display_name) VALUES (?, ?, ?)",
+    [username, passwordHash, displayName || username]);
   return getPlayerByUsername(username);
 }
 
@@ -106,7 +127,7 @@ function updateRatings(whiteUsername, blackUsername, result, moves, timeLimit) {
   const black = getPlayerByUsername(blackUsername);
   if (!white || !black) return null;
 
-  let resultA = result === "white" ? 1 : result === "black" ? 0 : 0.5;
+  const resultA = result === "white" ? 1 : result === "black" ? 0 : 0.5;
   const { newRatingA, newRatingB } = calculateElo(white.rating, black.rating, resultA);
 
   run(`UPDATE players SET rating=?, games=games+1, wins=wins+?, losses=losses+?, draws=draws+? WHERE username=?`,
