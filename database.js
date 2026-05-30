@@ -1,26 +1,19 @@
 const { Pool } = require("pg");
 
-// Бүх environment variable-уудыг log хийх
-console.log("All env keys:", Object.keys(process.env).filter(k => k.includes('DATA') || k.includes('POST') || k.includes('PG')));
+const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 
-const connectionString = process.env.DATABASE_URL 
-  || process.env.DATABASE_PUBLIC_URL
-  || process.env.POSTGRES_URL
-  || process.env.POSTGRESQL_URL;
+if (!connectionString) {
+  console.error("❌ No database connection string found!");
+  process.exit(1);
+}
 
-console.log("Connection string found:", !!connectionString);
-
-const pool = new Pool(
-  connectionString 
-    ? { connectionString, ssl: { rejectUnauthorized: false } }
-    : { host: 'trolley.proxy.rlwy.net', port: 39689, database: 'railway', user: 'postgres', password: 'TlcgAdkAAPiHqaihbshDJZylUAbGcwtu', ssl: { rejectUnauthorized: false } }
-);
+const pool = new Pool({
+  connectionString,
+  ssl: { rejectUnauthorized: false },
+});
 
 async function initTables() {
-  console.log("Connecting to database...");
   const client = await pool.connect();
-  console.log("Connected successfully!");
-  
   await client.query(`
     CREATE TABLE IF NOT EXISTS players (
       id SERIAL PRIMARY KEY,
