@@ -1,18 +1,25 @@
 const { Pool } = require("pg");
 
-const connectionString = process.env.DATABASE_URL;
-console.log("DATABASE_URL exists:", !!connectionString);
-console.log("DATABASE_URL starts with:", connectionString ? connectionString.substring(0, 30) : "UNDEFINED");
+// Бүх environment variable-уудыг log хийх
+console.log("All env keys:", Object.keys(process.env).filter(k => k.includes('DATA') || k.includes('POST') || k.includes('PG')));
 
-const pool = new Pool({
-  connectionString: connectionString,
-  ssl: { rejectUnauthorized: false },
-});
+const connectionString = process.env.DATABASE_URL 
+  || process.env.DATABASE_PUBLIC_URL
+  || process.env.POSTGRES_URL
+  || process.env.POSTGRESQL_URL;
+
+console.log("Connection string found:", !!connectionString);
+
+const pool = new Pool(
+  connectionString 
+    ? { connectionString, ssl: { rejectUnauthorized: false } }
+    : { host: 'trolley.proxy.rlwy.net', port: 39689, database: 'railway', user: 'postgres', password: 'TlcgAdkAAPiHqaihbshDJZylUAbGcwtu', ssl: { rejectUnauthorized: false } }
+);
 
 async function initTables() {
   console.log("Connecting to database...");
   const client = await pool.connect();
-  console.log("Connected!");
+  console.log("Connected successfully!");
   
   await client.query(`
     CREATE TABLE IF NOT EXISTS players (
