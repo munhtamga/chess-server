@@ -11,6 +11,7 @@
     "bcryptjs": "^2.4.3",
     "chess.js": "^1.4.0",
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^4.22.2",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.3",
