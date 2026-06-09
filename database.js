@@ -351,9 +351,26 @@ async function getPlatformStats() {
   };
 }
 
+// ── Admin: оноо тохируулах ────────────────────────────────────────────────────
+async function adjustPlayerPoints(username, amount, description) {
+  const player = await getPlayerByUsername(username);
+  if (!player) throw new Error("Player not found");
+  const newPoints = Math.max(0, player.points + amount);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("UPDATE players SET points=$1 WHERE username=$2", [newPoints, username]);
+    await addTransaction(client, username, "admin_adjust", amount, newPoints, description || "Admin adjustment");
+    await client.query("COMMIT");
+    return { newPoints };
+  } catch (e) { await client.query("ROLLBACK"); throw e; }
+  finally { client.release(); }
+}
+
 module.exports = {
   initTables, getPlayerByUsername, createPlayer, claimLoginBonus,
   addWaitingPoints, transferPoints, updateRatings,
   createEscrow, resolveEscrow, getEscrow,
   getLeaderboard, getAllPlayers, getPlayerTransactions, getPlatformStats,
+  adjustPlayerPoints,
 };

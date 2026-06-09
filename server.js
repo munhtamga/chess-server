@@ -11,6 +11,7 @@ const {
   addWaitingPoints, transferPoints, updateRatings,
   createEscrow, resolveEscrow, getEscrow,
   getLeaderboard, getAllPlayers, getPlayerTransactions, getPlatformStats,
+  adjustPlayerPoints,
 } = require("./database");
 
 const JWT_SECRET = process.env.JWT_SECRET || "chess_secret_key_2024";
@@ -126,16 +127,12 @@ app.get("/admin/stats", adminMiddleware, async (req, res) => {
 app.post("/admin/adjust-points", adminMiddleware, async (req, res) => {
   try {
     const { username, amount, reason } = req.body;
+    if (!username || amount === undefined) return res.status(400).json({ error: "Missing username or amount" });
     const player = await getPlayerByUsername(username);
     if (!player) return res.status(404).json({ error: "Player not found" });
-    const { Pool } = require("pg");
-    const pool = new Pool({ connectionString: process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-    const newPoints = Math.max(0, player.points + amount);
-    await pool.query("UPDATE players SET points=$1 WHERE username=$2", [newPoints, username]);
-    await pool.query("INSERT INTO transactions (username,type,amount,balance_after,description) VALUES ($1,$2,$3,$4,$5)",
-      [username, "admin_adjust", amount, newPoints, reason || "Admin adjustment"]);
-    res.json({ success: true, newPoints });
-  } catch (e) { res.status(500).json({ error: "Server error" }); }
+    const result = await adjustPlayerPoints(username, Number(amount), reason || "Admin adjustment");
+    res.json({ success: true, newPoints: result.newPoints });
+  } catch (e) { console.error("Admin adjust error:", e); res.status(500).json({ error: "Server error" }); }
 });
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
