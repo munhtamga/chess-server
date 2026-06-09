@@ -317,7 +317,7 @@ async function getLeaderboard(limit = 20) {
   const res = await pool.query(`
     SELECT username, display_name, rating, points, games, wins, losses, draws,
       CASE WHEN games > 0 THEN ROUND(wins * 100.0 / games, 1) ELSE 0 END as win_rate
-    FROM players WHERE games > 0
+    FROM players
     ORDER BY rating DESC LIMIT $1
   `, [limit]);
   return res.rows;
